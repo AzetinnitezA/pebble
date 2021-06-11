@@ -9,11 +9,16 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/hex"
+	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"math"
 	"math/big"
 	"net"
+	"os"
 	"time"
 
 	"github.com/letsencrypt/pebble/acme"
@@ -91,11 +96,70 @@ func makeKey() (*rsa.PrivateKey, []byte, error) {
 	return key, ski, nil
 }
 
+func ParseRsaPrivateKeyFromPemStr(privPEM string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(privPEM))
+	if block == nil {
+		return nil, errors.New("failed to parse PEM block containing the key")
+	}
+
+	priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return priv, nil
+}
+
+func LoadX509KeyPair(certFile, keyFile string) (*x509.Certificate, *rsa.PrivateKey) {
+	cf, e := ioutil.ReadFile(certFile)
+	if e != nil {
+		fmt.Println("cfload:", e.Error())
+		os.Exit(1)
+	}
+
+	kf, e := ioutil.ReadFile(keyFile)
+	if e != nil {
+		fmt.Println("kfload:", e.Error())
+		os.Exit(1)
+	}
+	cpb, cr := pem.Decode(cf)
+	fmt.Println(string(cr))
+	kpb, kr := pem.Decode(kf)
+	fmt.Println(string(kr))
+	crt, e := x509.ParseCertificate(cpb.Bytes)
+
+	if e != nil {
+		fmt.Println("parsex509:", e.Error())
+		os.Exit(1)
+	}
+	key, e := x509.ParsePKCS1PrivateKey(kpb.Bytes)
+	if e != nil {
+		fmt.Println("parsekey:", e.Error())
+		os.Exit(1)
+	}
+	return crt, key
+}
+
+func WriteToFile(filename string, data string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = io.WriteString(file, data)
+	if err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
 func (ca *CAImpl) makeRootCert(
 	subjectKey crypto.Signer,
 	subject pkix.Name,
 	subjectKeyID []byte,
-	signer *issuer) (*core.Certificate, error) {
+	signer *issuer,
+	isRoot bool) (*core.Certificate, error) {
 
 	serial := makeSerial()
 	template := &x509.Certificate{
@@ -105,7 +169,7 @@ func (ca *CAImpl) makeRootCert(
 		NotAfter:     time.Now().AddDate(30, 0, 0),
 
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageEmailProtection},
 		SubjectKeyId:          subjectKeyID,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -121,14 +185,33 @@ func (ca *CAImpl) makeRootCert(
 		parent = template
 	}
 
+	var cert *x509.Certificate
+
 	der, err := x509.CreateCertificate(rand.Reader, template, parent, subjectKey.Public(), signerKey)
 	if err != nil {
 		return nil, err
 	}
 
-	cert, err := x509.ParseCertificate(der)
+	cert, err = x509.ParseCertificate(der)
 	if err != nil {
 		return nil, err
+	}
+
+	if _, err := os.Stat("root-ca/root.crt"); err == nil {
+		//does exist
+	} else {
+
+		certPEMBlock := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+
+		err := WriteToFile("root-ca/root.crt", string(certPEMBlock))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	if isRoot {
+		cert, _ = LoadX509KeyPair("root-ca/root.crt", "root-ca/root.key")
+		der = cert.Raw
 	}
 
 	hexSerial := hex.EncodeToString(cert.SerialNumber.Bytes())
@@ -151,6 +234,30 @@ func (ca *CAImpl) makeRootCert(
 func (ca *CAImpl) newRootIssuer() (*issuer, error) {
 	// Make a root private key
 	rk, subjectKeyID, err := makeKey()
+
+	if _, err := os.Stat("root-ca/root.key"); err == nil {
+		//does exist
+	} else {
+
+		// Convert it to pem
+		block := &pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(rk),
+		}
+
+		key_bytes := pem.EncodeToMemory(block)
+
+		err := WriteToFile("root-ca/root.key", string(key_bytes))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	content, err := ioutil.ReadFile("root-ca/root.key") // the file is inside the local directory
+	if err != nil {
+		fmt.Println("Err")
+	}
+	rk, err = ParseRsaPrivateKeyFromPemStr(string(content))
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +265,7 @@ func (ca *CAImpl) newRootIssuer() (*issuer, error) {
 	subject := pkix.Name{
 		CommonName: rootCAPrefix + hex.EncodeToString(makeSerial().Bytes()[:3]),
 	}
-	rc, err := ca.makeRootCert(rk, subject, subjectKeyID, nil)
+	rc, err := ca.makeRootCert(rk, subject, subjectKeyID, nil, true)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +282,7 @@ func (ca *CAImpl) newIntermediateIssuer(root *issuer, intermediateKey crypto.Sig
 		return nil, fmt.Errorf("Internal error: root must not be nil")
 	}
 	// Make an intermediate certificate with the root issuer
-	ic, err := ca.makeRootCert(intermediateKey, subject, subjectKeyID, root)
+	ic, err := ca.makeRootCert(intermediateKey, subject, subjectKeyID, root, false)
 	if err != nil {
 		return nil, err
 	}
@@ -223,8 +330,7 @@ func (ca *CAImpl) newCertificate(domains []string, ips []net.IP, key crypto.Publ
 
 	serial := makeSerial()
 	template := &x509.Certificate{
-		DNSNames:    domains,
-		IPAddresses: ips,
+		EmailAddresses: domains,
 		Subject: pkix.Name{
 			CommonName: cn,
 		},
@@ -232,8 +338,8 @@ func (ca *CAImpl) newCertificate(domains []string, ips []net.IP, key crypto.Publ
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().AddDate(5, 0, 0),
 
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageContentCommitment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageEmailProtection, x509.ExtKeyUsageClientAuth},
 		SubjectKeyId:          subjectKeyID,
 		BasicConstraintsValid: true,
 		IsCA:                  false,
@@ -323,7 +429,7 @@ func (ca *CAImpl) CompleteOrder(order *core.Order) {
 
 	// issue a certificate for the csr
 	csr := order.ParsedCSR
-	cert, err := ca.newCertificate(csr.DNSNames, csr.IPAddresses, csr.PublicKey, order.AccountID)
+	cert, err := ca.newCertificate(csr.EmailAddresses, csr.IPAddresses, csr.PublicKey, order.AccountID)
 	if err != nil {
 		ca.log.Printf("Error: unable to issue order: %s", err.Error())
 		return
