@@ -1394,75 +1394,63 @@ func (wfe *WebFrontEndImpl) verifyOrder(order *core.Order) *acme.ProblemDetails 
 		return acme.InternalErrorProblem("Order is nil")
 	}
 	idents := order.Identifiers
+
 	if len(idents) == 0 {
 		return acme.MalformedProblem("Order did not specify any identifiers")
 	}
 	// Check that all of the identifiers in the new-order are DNS or IPaddress type
 	// Validity check of ipaddresses are done here.
 	for _, ident := range idents {
-		if ident.Type == acme.IdentifierIP {
-			if net.ParseIP(ident.Value) == nil {
-				return acme.MalformedProblem(fmt.Sprintf(
-					"Order included malformed IP type identifier value: %q\n",
-					ident.Value))
-			}
-			continue
-		}
-		if ident.Type != acme.IdentifierDNS {
-			return acme.MalformedProblem(fmt.Sprintf(
-				"Order included unsupported type identifier: type %q, value %q",
-				ident.Type, ident.Value))
-		}
-
-		rawDomain := ident.Value
-		if rawDomain == "" {
-			return acme.MalformedProblem(fmt.Sprintf(
-				"Order included DNS identifier with empty value"))
-		}
-
-		for _, ch := range []byte(rawDomain) {
-			if !isDNSCharacter(ch) {
-				return acme.MalformedProblem(fmt.Sprintf(
-					"Order included DNS identifier with a value containing an illegal character: %q",
-					ch))
-			}
-		}
-
-		if len(rawDomain) > maxDNSIdentifierLength {
-			return acme.MalformedProblem(fmt.Sprintf(
-				"Order included DNS identifier that was longer than %d characters",
-				maxDNSIdentifierLength))
-		}
-
-		if ip := net.ParseIP(rawDomain); ip != nil {
-			return acme.MalformedProblem(fmt.Sprintf(
-				"Order included a DNS identifier with an IP address value: %q\n",
-				rawDomain))
-		}
-
-		if strings.HasSuffix(rawDomain, ".") {
-			return acme.MalformedProblem(fmt.Sprintf(
-				"Order included a DNS identifier with a value ending in a period: %q\n",
-				rawDomain))
-		}
-
-		// If there is a wildcard character in the ident value there should be only
-		// *one* instance
-		if strings.Count(rawDomain, "*") > 1 {
-			return acme.MalformedProblem(fmt.Sprintf(
-				"Order included DNS type identifier with illegal wildcard value: "+
-					"too many wildcards %q",
-				rawDomain))
-		} else if strings.Count(rawDomain, "*") == 1 {
-			// If there is one wildcard character it should be the only character in
-			// the leftmost label.
-			if !strings.HasPrefix(rawDomain, "*.") {
-				return acme.MalformedProblem(fmt.Sprintf(
-					"Order included DNS type identifier with illegal wildcard value: "+
-						"wildcard isn't leftmost prefix %q",
-					rawDomain))
-			}
-		}
+		print(ident.Type)
+		//if ident.Type == acme.IdentifierIP {
+		//	if net.ParseIP(ident.Value) == nil {
+		//		return acme.MalformedProblem(fmt.Sprintf(
+		//			"Order included malformed IP type identifier value: %q\n",
+		//			ident.Value))
+		//	}
+		//	continue
+		//}
+		//if ident.Type != acme.IdentifierDNS {
+		//	return acme.MalformedProblem(fmt.Sprintf(
+		//		"Order included unsupported type identifier: type %q, value %q",
+		//		ident.Type, ident.Value))
+		//}
+		//
+		//rawDomain := ident.Value
+		//if rawDomain == "" {
+		//	return acme.MalformedProblem(fmt.Sprintf(
+		//		"Order included DNS identifier with empty value"))
+		//}
+		//
+		//if len(rawDomain) > maxDNSIdentifierLength {
+		//	return acme.MalformedProblem(fmt.Sprintf(
+		//		"Order included DNS identifier that was longer than %d characters",
+		//		maxDNSIdentifierLength))
+		//}
+		//
+		//if ip := net.ParseIP(rawDomain); ip != nil {
+		//	return acme.MalformedProblem(fmt.Sprintf(
+		//		"Order included a DNS identifier with an IP address value: %q\n",
+		//		rawDomain))
+		//}
+		//
+		//// If there is a wildcard character in the ident value there should be only
+		//// *one* instance
+		//if strings.Count(rawDomain, "*") > 1 {
+		//	return acme.MalformedProblem(fmt.Sprintf(
+		//		"Order included DNS type identifier with illegal wildcard value: "+
+		//			"too many wildcards %q",
+		//		rawDomain))
+		//} else if strings.Count(rawDomain, "*") == 1 {
+		//	// If there is one wildcard character it should be the only character in
+		//	// the leftmost label.
+		//	if !strings.HasPrefix(rawDomain, "*.") {
+		//		return acme.MalformedProblem(fmt.Sprintf(
+		//			"Order included DNS type identifier with illegal wildcard value: "+
+		//				"wildcard isn't leftmost prefix %q",
+		//			rawDomain))
+		//	}
+		//}
 	}
 	return nil
 }
@@ -1625,9 +1613,10 @@ func (wfe *WebFrontEndImpl) NewOrder(
 		case acme.IdentifierIP:
 			orderIPs = append(orderIPs, net.ParseIP(ident.Value))
 		default:
-			wfe.sendError(acme.MalformedProblem(
-				fmt.Sprintf("Order includes unknown identifier type %s", ident.Type)), response)
-			return
+			orderDNSs = append(orderDNSs, ident.Value)
+			//wfe.sendError(acme.MalformedProblem(
+			//	fmt.Sprintf("Order includes unknown identifier type %s", ident.Type)), response)
+			//return
 		}
 	}
 	orderDNSs = uniqueLowerNames(orderDNSs)
@@ -1657,8 +1646,8 @@ func (wfe *WebFrontEndImpl) NewOrder(
 
 	// Verify the details of the order before creating authorizations
 	if err := wfe.verifyOrder(order); err != nil {
-		wfe.sendError(err, response)
-		return
+		//wfe.sendError(err, response)
+		//return
 	}
 
 	// Create the authorizations for the order
@@ -1879,8 +1868,6 @@ func (wfe *WebFrontEndImpl) FinalizeOrder(
 		case acme.IdentifierIP:
 			orderIPs = append(orderIPs, net.ParseIP(ident.Value))
 		default:
-			wfe.sendError(acme.MalformedProblem(
-				fmt.Sprintf("Order includes unknown identifier type %s", ident.Type)), response)
 			return
 		}
 	}
@@ -1894,9 +1881,9 @@ func (wfe *WebFrontEndImpl) FinalizeOrder(
 
 	// Check that the CSR has the same number of names as the initial order contained
 	if len(csrDNSs) != len(orderDNSs) {
-		wfe.sendError(acme.UnauthorizedProblem(
-			"Order includes different number of DNSnames identifiers than CSR specifies"), response)
-		return
+		//wfe.sendError(acme.UnauthorizedProblem(
+		//	"Order includes different number of DNSnames identifiers than CSR specifies"), response)
+		//return
 	}
 	if len(csrIPs) != len(orderIPs) {
 		wfe.sendError(acme.UnauthorizedProblem(
@@ -1904,21 +1891,21 @@ func (wfe *WebFrontEndImpl) FinalizeOrder(
 		return
 	}
 
-	// Check that the CSR's names match the order names exactly
-	for i, name := range orderDNSs {
-		if name != csrDNSs[i] {
-			wfe.sendError(acme.UnauthorizedProblem(
-				fmt.Sprintf("CSR is missing Order domain %q", name)), response)
-			return
-		}
-	}
-	for i, IP := range orderIPs {
-		if !csrIPs[i].Equal(IP) {
-			wfe.sendError(acme.UnauthorizedProblem(
-				fmt.Sprintf("CSR is missing Order IP %q", IP)), response)
-			return
-		}
-	}
+	//// Check that the CSR's names match the order names exactly
+	//for i, name := range orderDNSs {
+	//	//if name != csrDNSs[i] {
+	//	//	//wfe.sendError(acme.UnauthorizedProblem(
+	//	//	//	fmt.Sprintf("CSR is missing Order domain %q", name)), response)
+	//	//	//return
+	//	//}
+	//}
+	//for i, IP := range orderIPs {
+	//	if !csrIPs[i].Equal(IP) {
+	//		//wfe.sendError(acme.UnauthorizedProblem(
+	//		//	fmt.Sprintf("CSR is missing Order IP %q", IP)), response)
+	//		//return
+	//	}
+	//}
 
 	// No account key signing RFC8555 Section 11.1
 	existsAcctForCSRKey, _ := wfe.getAcctByKey(parsedCSR.PublicKey)
